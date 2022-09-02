@@ -1,1 +1,326 @@
+//                                  OS Assignment-1												BT20CSE115 TANISHQ NIKOSE
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>	  // exit()
+#include <unistd.h>	  // fork(), getpid(), exec()
+#include <sys/wait.h> // wait()
+#include <signal.h>	  // signal()
+#include <fcntl.h>	  // close(), open()
+#define CWD_SIZE 10000	// current working directory size
+#define MAX_CMDS 10		// Max number of strings in command
+#define MAX_CMD_LEN 100 // Max possible length of any command
+char **get_input(char *input)
+{
+	char **argument = malloc(MAX_CMDS * sizeof(char *));
+	char *parsed; // To store parsed string after tokenisation
+	int index = 0;
+	// Splitting the string using " " as delimiter
+	// Returns first token
+	parsed = strtok(input, " ");
+	// Keep getting tokens while one of the delimiters present in argument[].
+	while (parsed != NULL)
+	{
+		argument[index] = parsed;
+		index++;
+		parsed = strtok(NULL, " ");
+	}
+	argument[index] = NULL;
+	return argument;
+}
+// This function will check whether given token exists in command
+int tokenCheck(char **commands, char *token)
+{
+	// printf("In token check function\n");
+	char **arguments = commands;
+	// Traversing through all strings in 'arguments' and checking whether string is equal to token
+	while (*arguments)
+	{
+		if (strcmp(*arguments, token) == 0)
+			return 1;
+		*arguments++;
+	}
+	return 0;
+}
+// This function will parse the input string into multiple commands or a single command with arguments depending on the delimiter (&&, ##, >, or spaces).
+int parseInput(char **arguments)
+{
+	// Checking whether command entered is 'exit'
+	if (strcmp(arguments[0], "exit") == 0)
+	{
+		// printf("Exit check\n");
+		return 0;
+	}
+	int parallel_flag = tokenCheck(arguments, "&&"); // Check whether arguments contain "&&"
+	if (parallel_flag)								 // Condition when shell has to execute parallel commands
+	{
+		return 1;
+	}
+	int sequential_flag = tokenCheck(arguments, "##"); // Check whether arguments contain "##"
+	if (sequential_flag)							   // Condition when shell has to execute sequential commands
+	{
+		// printf("Sequential check passed\n");
+		return 2;
+	}
+	int redirection_flag = tokenCheck(arguments, ">"); // Check whether arguments contain ">"
+	if (redirection_flag)							   // Condition when shell has to execute command redirection
+	{
+		return 3;
+	}
+	return 4; // for other basic single commands
+}
+void changeDirectory(char **arguments)
+{
+	// Change working directory to mentioned directory
+	const char *path = arguments[1];
+	if (chdir(path) == -1)
+	{
+		printf("Shell: Incorrect command\n"); // If chdir fails
+	}
+}
+void executeCommand(char **arguments)
+{
+	// Condition when user has entered no command
+	if (strlen(arguments[0]) == 0)
+	{
+		return;
+	}
+	else if (strcmp(arguments[0], "cd") == 0) // for cd command
+	{
+		changeDirectory(arguments);
+	}
+	else if (strcmp(arguments[0], "exit") == 0) // for 'exit' command
+	{
+		exit(0);
+	}
+	// This function will fork a new process to execute a command
+	else
+	{
+		pid_t pid = fork(); // forking a child process
+		if (pid < 0)		// fork unsuccessful
+		{
+			printf("Shell: Incorrect command\n");
+		}
+		else if (pid == 0) // successful fork
+		{
+			// Signal handling
+			// Restoring default behaviour for Ctrl-C and Ctrl-Z
+			signal(SIGINT, SIG_DFL);
+			signal(SIGTSTP, SIG_DFL);
+			if (execvp(arguments[0], arguments) < 0) // incorrect command
+			{
+				printf("Shell: Incorrect command\n");
+			}
+			exit(0);
+		}
+		else // parent
+		{
+			wait(NULL); // wait till child process completes
+			return;
+		}
+	}
+}
+// This function will run multiple commands in parallel
+void executeParallelCommands(char **arguments)
+{
+	// Storing copy of 'arguments'
+	char **temp = arguments;
+	// For storing all commands to be executed seperately
+	char *all_commands[MAX_CMDS][MAX_CMD_LEN];
+	int i = 0, j = 0, count = 1;
+	// To store pid of process after forking
+	pid_t pid = 1;
+	int status; // For waitpid function
+	// cd abc && ls && pwd
+	// Traversing through arguments and storing it in 'temp' so that commands can be executed smoothly
+	while (*temp)
+	{
+		//If it isnt "&&", means it is still part of previous command
+		if (*temp && (strcmp(*temp, "&&") != 0))
+		{
+			all_commands[i][j++] = *temp;
+		}
+		//If it is "&&", hence previous command has ended and hence making changes to store new command
+		else
+		{
+			all_commands[i++][j] = NULL;
+			j = 0;
+			count++;
+		}
+		//If *temp isnt null, means commands are still remaining to manipulate
+		if (*temp)
+			*temp++;
+	}
+	// printf("%d", count);
+	all_commands[i][j] = NULL;
+	all_commands[i + 1][0] = NULL;
+	// Traversing through all commands
+	// As we want for loop to execute only for parent hence applying condition of pid != 0
+	for (int i = 0; i < count && pid != 0; ++i)
+	{
+		pid = fork(); // Forking
+		if (pid < 0)  // If fork fails
+		{
+			printf("Shell: Incorrect command\n");
+			exit(1);
+		}
+		else if (pid == 0) // Fork succeeds
+		{
+			// Signal handling
+			// Restoring the default behaviour for Ctrl-C and Ctrl-Z signal
+			signal(SIGINT, SIG_DFL);
+			signal(SIGTSTP, SIG_DFL);
+			//Executing command
+			execvp(all_commands[i][0], all_commands[i]);
+		}
+	}
+	// Waiting till all fork executions complete
+	while (count > 0)
+	{
+		waitpid(-1, &status, WUNTRACED);
+		count--;
+	}
+}
+void executeSequentialCommands(char **arguments)
+{
+	// printf("in sequential function");
+	// This function will run multiple commands sequentially
+	char **temp = arguments;
+	// Checking all words in command entered in terminal
+	while (*temp)
+	{
+		// ls ## pwd
+		char **one_command = malloc(MAX_CMDS * sizeof(char *)); // To store one by one command to be executed
+		one_command[0] = NULL;
+		int j = 0; // Index for one_command variable
+		// Traversing through arguments and keep storing values in 'one_command' until we encounter "##"
+		while (*temp && (strcmp(*temp, "##") != 0))
+		{
+			one_command[j] = *temp++;
+			j++;
+		}
+		// Executing the command got from above traversal
+		executeCommand(one_command);
+		// Checking if temp is not null and proceeding accordingly
+		if (*temp)
+		{
+			*temp++;
+		}
+	}
+}
+void executeCommandRedirection(char **temp)
+{
+	// This function will run a single command with output redirected to an output file specificed by user
+	char **arguments = temp;
+	// printf("%s\n", arguments[0]);
+	// printf("%s\n", arguments[1]);
+	// printf("%s\n", arguments[2]);
+	// Ex. ls > abc.txt
+	// For ensuring no problem while executing execvp() function
+	arguments[1] = NULL;
+	// Condition if file name is empty
+	if (strlen(temp[2]) == 0)
+	{
+		printf("Shell: Incorrect command\n");
+	}
+	else
+	{
+		pid_t pid = fork(); // forking the child
+		if (pid < 0)		// fork unsuccessful
+		{
+			printf("Shell: Incorrect command\n");
+			return;
+		}
+		else if (pid == 0) // fork successful - child
+		{
+			// Restoring default behaviour for Ctrl-C and Ctrl-Z
+			signal(SIGINT, SIG_DFL);
+			signal(SIGTSTP, SIG_DFL);
+			// redirecting stdout
+			close(STDOUT_FILENO);
+			open(temp[2], O_CREAT | O_WRONLY | O_APPEND);
+			// executing command
+			execvp(arguments[0], arguments);
+			return;
+		}
+		else
+		{
+			// Waiting till parent process completes
+			wait(NULL);
+			return;
+		}
+	}
+}
+int main()
+{
+	signal(SIGINT, SIG_IGN);  // Ignore signal interrupt (Ctrl+C)
+	signal(SIGTSTP, SIG_IGN); // Ignore signal of suspending execution (Ctrl+Z)
+	char cwd[CWD_SIZE];		  // Variable to store current working directory
+	char *command = NULL;	  // lineptr for getline function, and if it is set to null, buffer will be allocated to store line
+	int command_value = 0;	  // To keep track of command to be executed
+	size_t cmd_size = 0;
+	while (1)
+	{
+		// Ex. cd check && ls
+		command_value = -1;
+		char **arguments = NULL; // To store strings seperately from command given in terminal
+		// using getcwd function to get the current working directory
+		getcwd(cwd, CWD_SIZE);
+		printf("%s$", cwd);
+		// accept input with 'getline()'
+		getline(&command, &cmd_size, stdin);
+		// Extract token surrounded by delimiter '\n'
+		command = strsep(&command, "\n");
+		// printf("%s", command);
+		// Condition when user has entered no command
+		if (strlen(command) == 0)
+		{
+			continue;
+		}
+		// Extracting tokens surrounded by delimiter " "
+		arguments = get_input(command);
+		// Checking values in 'arguments'
+		// while(*arguments)
+		// {
+		// 	printf("%s\n", *arguments++);
+		// }
 
+		// When in sequential execution first command is empty
+		if (strcmp(arguments[0], "##") == 0)
+		{
+			continue;
+		}
+
+		// parse the input to check whether command is a single word or has &&, ##, >
+		command_value = parseInput(arguments);
+
+		// printf("%d\n", command_value);
+		// Condition when user has to exit the shell
+		if (command_value == 0)
+		{
+			printf("Exiting shell...\n");
+			break;
+		}
+		// printf("Reached here 1\n");
+		if (command_value == 1)
+		{
+			executeParallelCommands(arguments); // This function is invoked when user wants to run multiple commands in parallel (commands separated by &&)
+		}
+		// printf("Reached here 2\n");
+		else if (command_value == 2)
+		{
+			executeSequentialCommands(arguments); // This function is invoked when user wants to run multiple commands sequentially (commands separated by ##)
+		}
+		// printf("Reached here 3\n");
+		else if (command_value == 3)
+		{
+			executeCommandRedirection(arguments); // This function is invoked when user wants redirect output of a single command to and output file specificed by user
+		}
+		// printf("Reached here 4\n");
+		else
+		{
+			executeCommand(arguments); // This function is invoked when user wants to run a single commands
+		}
+	}
+	// Bash shell done
+	return 0;
+}
